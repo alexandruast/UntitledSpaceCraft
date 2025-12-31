@@ -26,6 +26,10 @@ void registerTelemetryChannels() {
   mySimpit.registerChannel(DELTAV_MESSAGE);
   mySimpit.registerChannel(ORBIT_MESSAGE);
   mySimpit.registerChannel(MANEUVER_MESSAGE);
+  mySimpit.registerChannel(AIRSPEED_MESSAGE);
+  mySimpit.registerChannel(ATMO_CONDITIONS_MESSAGE);
+  mySimpit.registerChannel(ROTATION_DATA_MESSAGE);
+  mySimpit.registerChannel(THROTTLE_CMD_MESSAGE);
 }
 
 void allZero() {

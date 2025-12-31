@@ -2,63 +2,46 @@
 //|   Transmissions   |
 //|-------------------|
 
-void module_transmission(int ctrl_address, int dspl_address, int in_bytes, int out_bytes, byte ctrl[], byte dspl[], bool &UpdateFlag) {
-  // Control
+void module_transmission(uint8_t ctrl_address,
+                         uint8_t dspl_address,
+                         uint8_t in_bytes,
+                         uint8_t out_bytes,
+                         byte ctrl[],
+                         byte dspl[],
+                         bool &UpdateFlag) {
   if (ctrl_address != 0) {
     Wire.requestFrom(ctrl_address, in_bytes);
-    for (int i = 0; i < in_bytes; i++) {
+    for (uint8_t i = 0; i < in_bytes; i++) {
       ctrl[i] = Wire.read();
     }
   }
 
-  // Display
-  if ((dspl_address != 0)) {// and (UpdateFlag)) {
+  if (dspl_address != 0) { // and (UpdateFlag)
     Wire.beginTransmission(dspl_address);
-    for (int i = 0; i < out_bytes; i++) {
+    for (uint8_t i = 0; i < out_bytes; i++) {
       Wire.write(dspl[i]);
     }
     Wire.endTransmission();
-    if (dspl_address == Ctrl_Sys_Dspl_) {
-      Wire.beginTransmission(dspl_address);
-      for (int i = 0; i < out_bytes; i++) {
-        Wire.write(dspl[i]);
-      }
-      Wire.endTransmission();
-    }
     UpdateFlag = false;
   }
 }
 
-void LCD_transmission(int dspl_address, String LCD_data_register[]) {
-  if (LCD_transmit == 0) {
+void LCD_transmission(uint8_t dspl_address, String LCD_data_register[]) {
+  if (LCD_transmit <= 4) {
     Wire.beginTransmission(dspl_address);
-    Wire.write(LCD_transmit);
-    sendPacket(LCD_data_register[0]);
-    sendPacket(LCD_data_register[1]);
-    sendPacket(LCD_data_register[2]);
+    Wire.write((uint8_t)LCD_transmit);
+
+    uint8_t base = (uint8_t)(LCD_transmit * 4);
+    for (uint8_t i = 0; i < 4; i++) {
+      sendPacket(LCD_data_register[base + i].c_str());
+    }
+
     Wire.endTransmission();
-    LCD_transmit = 1;
-  } else if (LCD_transmit == 1) {
-    Wire.beginTransmission(dspl_address);
-    Wire.write(LCD_transmit);
-    sendPacket(LCD_data_register[3]);
-    sendPacket(LCD_data_register[4]);
-    sendPacket(LCD_data_register[5]);
-    Wire.endTransmission();
-    LCD_transmit = 2;
-  } else if (LCD_transmit == 2) {
-    Wire.beginTransmission(dspl_address);
-    Wire.write(LCD_transmit);
-    sendPacket(LCD_data_register[6]);
-    sendPacket(LCD_data_register[7]);
-    sendPacket(LCD_data_register[8]);
-    sendPacket(LCD_data_register[9]);
-    Wire.endTransmission();
-    LCD_transmit = 3;
+    LCD_transmit++;
   } else {
-    byte LCD_mode_incoming;
-    Wire.requestFrom(dspl_address, 1);
-    LCD_mode_incoming = Wire.read();
+    Wire.requestFrom(dspl_address, (uint8_t)1);
+    uint8_t LCD_mode_incoming = Wire.read();
+
     LCD_transmit = 0;
     if (LCD_mode_incoming != LCD_mode) {
       LCD_mode = LCD_mode_incoming;
@@ -67,16 +50,14 @@ void LCD_transmission(int dspl_address, String LCD_data_register[]) {
   }
 }
 
-void sendPacket(String dataLCD) {
-  uint16_t packet_size = dataLCD.length();
-  if (isnan(packet_size)) {
-    packet_size = 3; // set value to zero if it is not a valid number
-  }
-  Wire.write(packet_size);
-  Wire.write(dataLCD.c_str(), packet_size);
+static void sendPacket(const char* s) {
+  uint8_t n = (uint8_t)strnlen(s, 255);
+  Wire.write(n);
+  Wire.write((const uint8_t*)s, n);
 }
 
 void messageHandler(byte messageType, byte msg[], byte msgSize) {
+  int stringLength;
   switch(messageType) {
     case EVA_MESSAGE:
       if (EVA_Ctrl_Con || Util_Nav_Ctrl_Con || Util_Time_Ctrl_Con) {
@@ -217,129 +198,51 @@ void messageHandler(byte messageType, byte msg[], byte msgSize) {
       mySimpit.registerChannel(ACTIONSTATUS_MESSAGE);
       break;
 
-    case LF_MESSAGE:
-      if (LCD_mode == 0) {
-        if (msgSize == sizeof(resourceMessage)) {
-          resourceMessage myLF;
-          myLF = parseResource(msg);
-          if (myLF.available) {
-            LCD_data[0] = String(map(myLF.available, 0, myLF.total, 0, 52));
-          } else {
-            LCD_data[0] = "0";
-          }
-        }
-      }
-      break;
-    
-    case OX_MESSAGE:
-      if (LCD_mode == 0) {
-        if (msgSize == sizeof(resourceMessage)) {
-          resourceMessage myOX;
-          myOX = parseResource(msg);
-          if (myOX.available) {
-            LCD_data[1] = String(map(myOX.available, 0, myOX.total, 0, 52));
-          } else {
-            LCD_data[1] = "0";
-          }
-        }
-      }
-      break;
-
-    case SF_MESSAGE:
-      if (LCD_mode == 0) {
-        if (msgSize == sizeof(resourceMessage)) {
-          resourceMessage mySF;
-          mySF = parseResource(msg);
-          if (mySF.available) {
-            LCD_data[2] = String(map(mySF.available, 0, mySF.total, 0, 52));
-          } else {
-            LCD_data[2] = "0";
-          }
-        }
-      }
-      break;
-
-    case ELECTRIC_MESSAGE:
-      if (LCD_mode == 0) {
-        if (msgSize == sizeof(resourceMessage)) {
-          resourceMessage myEC;
-          myEC = parseResource(msg);
-          if (myEC.available) {
-            LCD_data[3] = String(map(myEC.available, 0, myEC.total, 0, 52));
-          } else {
-            LCD_data[3] = "0";
-          }
-        }
-      }
-      break;
-
-    case XENON_GAS_MESSAGE:
-      if (LCD_mode == 0) {
-        if (msgSize == sizeof(resourceMessage)) {
-          resourceMessage myXE;
-          myXE = parseResource(msg);
-          if (myXE.available) {
-            LCD_data[4] = String(map(myXE.available, 0, myXE.total, 0, 52));
-          } else {
-            LCD_data[4] = "0";
-          }
-        }
-      }
-      break;
-
-    case MONO_MESSAGE:
-      if (LCD_mode == 0) {
-        if (msgSize == sizeof(resourceMessage)) {
-          resourceMessage myMP;
-          myMP = parseResource(msg);
-          if (myMP.available) {
-            LCD_data[5] = String(map(myMP.available, 0, myMP.total, 0, 52));
-          } else {
-            LCD_data[5] = "0";
-          }
-        }
-      }
-      break;
-
     case APSIDES_MESSAGE:
-      if ((LCD_mode == 1) or (LCD_mode == 2) or (LCD_mode == 3)) {
+      if (LCD_mode == 1) {
         if (msgSize == sizeof(apsidesMessage)) {
           apsidesMessage myAps;
           myAps = parseMessage<apsidesMessage>(msg);
-          String apo = String(myAps.apoapsis);
-          String peri = String(myAps.periapsis);
-          int stringLength = apo.length();
-          apo.remove(stringLength - 3, 3);
-          LCD_data[6] = apo;
-          stringLength = peri.length();
-          peri.remove(stringLength - 3, 3);
-          LCD_data[7] = peri;
+          String a;
+          int stringLength;
+          a = String(myAps.apoapsis);
+          stringLength = a.length();
+          a.remove(stringLength - 3, 3);
+          getUnits(a);
+          LCD_data[6] = a;
+          a = String(myAps.periapsis);
+          stringLength = a.length();
+          a.remove(stringLength - 3, 3);
+          getUnits(a);
+          LCD_data[18] = a;
         }
       }
       break;
 
     case APSIDESTIME_MESSAGE:
-      if ((LCD_mode == 1) or (LCD_mode == 2) or (LCD_mode == 3)) {
+      if (LCD_mode == 1) {
         if (msgSize == sizeof(apsidesTimeMessage)) {
           apsidesTimeMessage myAps;
           myAps = parseMessage<apsidesTimeMessage>(msg);
-          String apo = String(myAps.apoapsis);
-          String peri = String(myAps.periapsis);
-          LCD_data[8] = apo;
-          LCD_data[9] = peri;
+          LCD_data[12] = formatKerbalFutureDelta(myAps.apoapsis);
         }
       }
       break;
 
     case DELTAV_MESSAGE:
-      if ((LCD_mode == 1) or (LCD_mode == 2)) {
+      if (LCD_mode == 1) {
         if (msgSize == sizeof(deltaVMessage)) {
           deltaVMessage mydV;
           mydV = parseMessage<deltaVMessage>(msg);
-          String dV = String(mydV.totalDeltaV);
-          int stringLength = dV.length();
-          dV.remove(stringLength - 3, 3);
-          LCD_data[5] = dV;
+          String totaldV = String(mydV.totalDeltaV);
+          String stagedV = String(mydV.stageDeltaV);
+          int stringLength = 0;
+          stringLength = totaldV.length();
+          totaldV.remove(stringLength - 3, 3);
+          LCD_data[5] = totaldV;
+          stringLength = stagedV.length();
+          stagedV.remove(stringLength - 3, 3);
+          LCD_data[8] = stagedV;
         }
       }
       break;
@@ -353,10 +256,8 @@ void messageHandler(byte messageType, byte msg[], byte msgSize) {
           String surface = String(myAlt.surface);
           int stringLength = sealevel.length();
           sealevel.remove(stringLength - 3, 3);
-          LCD_data[0] = sealevel;
-          stringLength = surface.length();
-          surface.remove(stringLength - 3, 3);
-          LCD_data[1] = surface;
+          getUnits(sealevel);
+          LCD_data[10] = sealevel;
         }
       }
       break;
@@ -366,62 +267,220 @@ void messageHandler(byte messageType, byte msg[], byte msgSize) {
         if (msgSize == sizeof(velocityMessage)) {
           velocityMessage myVel;
           myVel = parseMessage<velocityMessage>(msg);
-          String orbital = String(myVel.orbital);
-          String surface = String(myVel.surface);
-          String vertical = String(myVel.vertical);
-          int stringLength = orbital.length();
-          orbital.remove(stringLength - 3, 3);
-          LCD_data[2] = orbital;
+          float f_surface = myVel.surface;
+          float f_vertical = myVel.vertical;
+          String surface = String(f_surface);
+          String vertical = String(f_vertical);
           stringLength = surface.length();
           surface.remove(stringLength - 3, 3);
+          getUnits(surface);
           LCD_data[3] = surface;
           stringLength = vertical.length();
           vertical.remove(stringLength - 3, 3);
+          getUnits(vertical);
           LCD_data[4] = vertical;
+          int32_t s = round_to_i32(f_surface);
+          int32_t v = round_to_i32(f_vertical);
+          // term = s^2 - v^2 (use 64-bit to avoid overflow)
+          int64_t term = (int64_t)s * (int64_t)s - (int64_t)v * (int64_t)v;
+          String horizontal = "0";
+          if (term > 0) {
+            uint32_t uterm = (uint32_t)term;
+            uint16_t h = isqrt_u32(uterm);
+            horizontal = String(h);
+          }
+          getUnits(horizontal);
+          LCD_data[11] = horizontal;
         }
       }
       break;
 
-    case MANEUVER_MESSAGE:
-      if (LCD_mode == 2) {
-        if (msgSize == sizeof(maneuverMessage)) {
-          maneuverMessage myMnv;
-          myMnv = parseMessage<maneuverMessage>(msg);
-          String deltaVNextManeuver = String(myMnv.deltaVNextManeuver);
-          int stringLength = deltaVNextManeuver.length();
-          deltaVNextManeuver.remove(stringLength - 3, 3);
-          LCD_data[0] = deltaVNextManeuver;
-          
-          String timeToNextManeuver = String(myMnv.timeToNextManeuver);
-          stringLength = timeToNextManeuver.length();
-          timeToNextManeuver.remove(stringLength - 3, 3);
-          LCD_data[1] = timeToNextManeuver;
-          
-          String durationNextManeuver = String(myMnv.durationNextManeuver);
-          LCD_data[2] = durationNextManeuver;
-          
-          String deltaVTotal = String(myMnv.deltaVTotal);
-          stringLength = deltaVTotal.length();
-          deltaVTotal.remove(stringLength - 3, 3);
-          LCD_data[3] = deltaVTotal;
+    case AIRSPEED_MESSAGE:
+      if (LCD_mode == 1) {
+        if (msgSize == sizeof(airspeedMessage)) {
+          airspeedMessage air = parseMessage<airspeedMessage>(msg);
+          LCD_data[14] = String(air.mach);
+          LCD_data[15] = String(air.gForces);
+        }
+      }
+      break;
+    
+    case ATMO_CONDITIONS_MESSAGE:
+      if (LCD_mode == 1) {
+        if (msgSize == sizeof(atmoConditionsMessage)) {
+          atmoConditionsMessage atmo = parseMessage<atmoConditionsMessage>(msg);
+          LCD_data[13] = String(atmo.airDensity);
+        }
+      }
+      break;
+    
+    case ROTATION_DATA_MESSAGE:
+      if (LCD_mode == 1) {
+        if (msgSize == sizeof(vesselPointingMessage)) {
+          vesselPointingMessage vessel = parseMessage<vesselPointingMessage>(msg);
+          LCD_data[1] = String(vessel.heading,1);
+          LCD_data[2] = String(vessel.pitch,1);
+          LCD_data[17] = String(vessel.roll,1);
+          LCD_data[7] = String(vessel.surfaceVelocityHeading);
+          LCD_data[9] = String(vessel.surfaceVelocityPitch);
         }
       }
       break;
 
-    case ORBIT_MESSAGE:
-      if (LCD_mode == 3) {
-        if (msgSize == sizeof(orbitInfoMessage)) {
-          orbitInfoMessage myOrb;
-          myOrb = parseMessage<orbitInfoMessage>(msg);
-          String semiMajorAxis = String(myOrb.semiMajorAxis);
-          int stringLength = semiMajorAxis.length();
-          semiMajorAxis.remove(stringLength - 3, 3);
-          LCD_data[0] = semiMajorAxis;
-          LCD_data[1] = String(myOrb.eccentricity);
-          LCD_data[2] = String(myOrb.inclination);
-          LCD_data[3] = String(myOrb.period);
+
+    case THROTTLE_CMD_MESSAGE:
+      if (LCD_mode == 1) {
+        if (msgSize == sizeof(throttleMessage)) {
+          throttleMessage t = parseMessage<throttleMessage>(msg);
+          // t.throttle is a 0–65535 value (0–100%); scale as needed
+          uint16_t raw = t.throttle;
+          int pct = (int)((raw * 100UL) / 32767UL);
+          LCD_data[16] = String(pct);
         }
       }
       break;
   }
+}
+
+
+// ----------------------- Time formatting -----------------------
+String formatSeconds(const String& secondsChar) {
+  uint32_t s = (uint32_t)strtoul(secondsChar.c_str(), NULL, 10);
+
+  // >= 1 Kerbin day -> "Xd"
+  if (s >= 21600UL) {
+    uint32_t d = s / 21600UL;
+    char buf[11];
+    ultoa(d, buf, 10);
+    uint8_t n = strlen(buf);
+    if (n < 10) { buf[n++] = 'd'; buf[n] = '\0'; }
+    return String(buf);
+  }
+
+  uint32_t h = s / 3600UL;
+  uint32_t m = (s % 3600UL) / 60UL;
+  uint32_t sec = s % 60UL;
+
+  char buf[11];
+  // h:mm:ss (hours can be 0..5 here)
+  buf[0] = (char)('0' + (h % 10));
+  buf[1] = ':';
+  buf[2] = (char)('0' + (m / 10));
+  buf[3] = (char)('0' + (m % 10));
+  buf[4] = ':';
+  buf[5] = (char)('0' + (sec / 10));
+  buf[6] = (char)('0' + (sec % 10));
+  buf[7] = '\0';
+  return String(buf);
+}
+
+String formatKerbalFutureDelta(uint64_t secondsIntoFuture) {
+  // keep API, but compute in 32-bit for smaller code
+  uint32_t t = (secondsIntoFuture > 0xFFFFFFFFULL) ? 0xFFFFFFFFUL : (uint32_t)secondsIntoFuture;
+
+  // constants locally (often smaller than global 64-bit consts)
+  const uint32_t SEC_PER_MIN  = 60UL;
+  const uint32_t SEC_PER_HOUR = 3600UL;
+  const uint32_t SEC_PER_DAY  = 21600UL;     // 6h
+  const uint32_t SEC_PER_YEAR = 9201600UL;   // 426d
+
+  char buf[11];
+
+  uint32_t totalHours = t / SEC_PER_HOUR;
+  uint32_t totalDays  = t / SEC_PER_DAY;
+
+  // > 9999d -> Yy
+  if (totalDays > 9999UL) {
+    uint32_t yy = t / SEC_PER_YEAR;
+    ultoa(yy, buf, 10);
+    uint8_t n = strlen(buf);
+    if (n < 10) { buf[n++] = 'y'; buf[n] = '\0'; }
+    return String(buf);
+  }
+
+  // > 96h -> Dd
+  if (totalHours > 96UL) {
+    ultoa(totalDays, buf, 10);
+    uint8_t n = strlen(buf);
+    if (n < 10) { buf[n++] = 'd'; buf[n] = '\0'; }
+    return String(buf);
+  }
+
+  // < 1h -> mm:ss
+  if (t < SEC_PER_HOUR) {
+    uint32_t mm = (t / SEC_PER_MIN) % 60UL;
+    uint32_t ss = t % 60UL;
+
+    buf[0] = (char)('0' + (mm / 10));
+    buf[1] = (char)('0' + (mm % 10));
+    buf[2] = ':';
+    buf[3] = (char)('0' + (ss / 10));
+    buf[4] = (char)('0' + (ss % 10));
+    buf[5] = '\0';
+    return String(buf);
+  }
+
+  // <= 96h -> hh:mm (total hours)
+  uint32_t hh = totalHours;                 // 0..96
+  uint32_t mm = (t / SEC_PER_MIN) % 60UL;
+
+  buf[0] = (char)('0' + (hh / 10));
+  buf[1] = (char)('0' + (hh % 10));
+  buf[2] = ':';
+  buf[3] = (char)('0' + (mm / 10));
+  buf[4] = (char)('0' + (mm % 10));
+  buf[5] = '\0';
+  return String(buf);
+}
+
+
+// ----------------------- Units -----------------------
+void getUnits(String &value) {
+  int n = value.length();
+  if (n <= 0) return;
+
+  if (n > 13) {            // -> T
+    value.remove(n - 12, 12);
+    value += 'T';
+    return;
+  }
+  if (n > 10) {            // -> G
+    value.remove(n - 9, 9);
+    value += 'G';
+    return;
+  }
+  if (n > 7) {             // -> M
+    value.remove(n - 6, 6);
+    value += 'M';
+    return;
+  }
+  if (n > 5) {             // -> k
+    value.remove(n - 3, 3);
+    value += 'k';
+    return;
+  }
+}
+
+// Fast integer sqrt for 32-bit values (no libm)
+static uint16_t isqrt_u32(uint32_t x) {
+  uint32_t op = x;
+  uint32_t res = 0;
+  uint32_t one = 1UL << 30;              // second-to-top bit
+
+  while (one > op) one >>= 2;
+
+  while (one != 0) {
+    if (op >= res + one) {
+      op -= res + one;
+      res = res + 2 * one;
+    }
+    res >>= 1;
+    one >>= 2;
+  }
+  return (uint16_t)res;                  // result fits for typical speeds
+}
+
+// Round float to nearest int without pulling lround()/libm
+static int32_t round_to_i32(float f) {
+  return (int32_t)(f + (f >= 0.0f ? 0.5f : -0.5f));
 }
