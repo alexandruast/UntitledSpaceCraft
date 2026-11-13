@@ -84,13 +84,13 @@ void lcd_f(uint8_t idx, float v, uint8_t decimals) {
 }
 
 // Time until a future event in Kerbin time: mm:ss under 1h, hh:mm up to 96h, then days, then years.
-// Negative (no future event, e.g. escape trajectory) shows "---".
-void lcd_time_until(uint8_t idx, int32_t seconds) {
-  if (seconds < 0) {
+// Negative or invalid (no future event, e.g. escape trajectory) shows "---".
+void lcd_time_until(uint8_t idx, float seconds) {
+  if (isnan(seconds) || seconds < 0.0f) {
     lcd_set(idx, "---");
     return;
   }
-  uint32_t t = (uint32_t)seconds;
+  uint32_t t = (seconds >= 4294967040.0f) ? 0xFFFFFFFFUL : (uint32_t)seconds;
 
   const uint32_t SEC_PER_MIN  = 60UL;
   const uint32_t SEC_PER_HOUR = 3600UL;
@@ -119,6 +119,17 @@ void lcd_time_until(uint8_t idx, int32_t seconds) {
     buf[5] = '\0';
   }
   lcd_set(idx, buf);
+}
+
+// Resource fill level in percent; "-" when the vessel has none of it.
+void lcd_resource(uint8_t idx, byte msg[]) {
+  resourceMessage r = parseResource(msg);
+  if (!(r.total > 0.0f)) {
+    lcd_set(idx, "-");
+    return;
+  }
+  float pct = constrain(r.available * 100.0f / r.total, 0.0f, 100.0f);
+  lcd_units(idx, pct + 0.5f);
 }
 
 void messageHandler(byte messageType, byte msg[], byte msgSize) {

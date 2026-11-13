@@ -84,13 +84,13 @@ void lcd_f(uint8_t idx, float v, uint8_t decimals) {
 }
 
 // Time until a future event in Kerbin time: mm:ss under 1h, hh:mm up to 96h, then days, then years.
-// Negative (no future event, e.g. escape trajectory) shows "---".
-void lcd_time_until(uint8_t idx, int32_t seconds) {
-  if (seconds < 0) {
+// Negative or invalid (no future event, e.g. escape trajectory) shows "---".
+void lcd_time_until(uint8_t idx, float seconds) {
+  if (isnan(seconds) || seconds < 0.0f) {
     lcd_set(idx, "---");
     return;
   }
-  uint32_t t = (uint32_t)seconds;
+  uint32_t t = (seconds >= 4294967040.0f) ? 0xFFFFFFFFUL : (uint32_t)seconds;
 
   const uint32_t SEC_PER_MIN  = 60UL;
   const uint32_t SEC_PER_HOUR = 3600UL;
@@ -121,88 +121,180 @@ void lcd_time_until(uint8_t idx, int32_t seconds) {
   lcd_set(idx, buf);
 }
 
+// Resource fill level in percent; "-" when the vessel has none of it.
+void lcd_resource(uint8_t idx, byte msg[]) {
+  resourceMessage r = parseResource(msg);
+  if (!(r.total > 0.0f)) {
+    lcd_set(idx, "-");
+    return;
+  }
+  float pct = constrain(r.available * 100.0f / r.total, 0.0f, 100.0f);
+  lcd_units(idx, pct + 0.5f);
+}
+
 void messageHandler(byte messageType, byte msg[], byte msgSize) {
   lastSimpitMessageAt = millis();
   switch(messageType) {
 // --- c1 ---
-// Field layout matches Firmware/Module Firmware/Telemetry/Telemetry.ino (screen 1):
-//  1 HDG   2 PIT   3 surface speed   4 VRT   5 dVT   6 APO   7 surface vel. heading
-//  8 dVS   9 surface vel. pitch   10 ALT   11 HRZ   12 TTA   13 air density
-//  14 MCH  15 G    16 THR   17 RLL   18 PER
+// Fields and pages: see LCD_F_* / LCD_PAGE_* in definitions.h and
+// Firmware/Module Firmware/Telemetry/Telemetry.ino. Page-specific writes check LCD_mode so a
+// late message from the previous page can't land in the new page's fields.
     case APSIDES_MESSAGE:
-      if (LCD_mode == 1 && msgSize == sizeof(apsidesMessage)) {
+      if (msgSize == sizeof(apsidesMessage)) {
         apsidesMessage myAps = parseMessage<apsidesMessage>(msg);
-        lcd_units(6, myAps.apoapsis);
-        lcd_units(18, myAps.periapsis);
+        lcd_units(LCD_F_APO, myAps.apoapsis);
+        lcd_units(LCD_F_PER, myAps.periapsis);
       }
       break;
 
     case APSIDESTIME_MESSAGE:
-      if (LCD_mode == 1 && msgSize == sizeof(apsidesTimeMessage)) {
+      if (msgSize == sizeof(apsidesTimeMessage)) {
         apsidesTimeMessage myAps = parseMessage<apsidesTimeMessage>(msg);
-        lcd_time_until(12, myAps.apoapsis);
+        lcd_time_until(LCD_F_TTA, myAps.apoapsis);
+        lcd_time_until(LCD_F_TTP, myAps.periapsis);
       }
       break;
 
     case DELTAV_MESSAGE:
-      if (LCD_mode == 1 && msgSize == sizeof(deltaVMessage)) {
+      if (msgSize == sizeof(deltaVMessage)) {
         deltaVMessage mydV = parseMessage<deltaVMessage>(msg);
-        lcd_units(5, mydV.totalDeltaV);
-        lcd_units(8, mydV.stageDeltaV);
+        lcd_units(LCD_F_DVT, mydV.totalDeltaV);
+        lcd_units(LCD_F_DVS, mydV.stageDeltaV);
+        LCD_ship_dV = mydV.totalDeltaV;
+        if (LCD_mode == LCD_PAGE_MNVR) {
+          lcd_units(LCD_F_MRG, LCD_ship_dV - LCD_nodes_dV);
+        }
       }
       break;
 
     case ALTITUDE_MESSAGE:
-      if (LCD_mode == 1 && msgSize == sizeof(altitudeMessage)) {
+      if (msgSize == sizeof(altitudeMessage)) {
         altitudeMessage myAlt = parseMessage<altitudeMessage>(msg);
-        lcd_units(10, myAlt.sealevel);
+        lcd_units(LCD_F_ALT, myAlt.sealevel);
       }
       break;
 
     case VELOCITY_MESSAGE:
-      if (LCD_mode == 1 && msgSize == sizeof(velocityMessage)) {
+      if (msgSize == sizeof(velocityMessage)) {
         velocityMessage myVel = parseMessage<velocityMessage>(msg);
-        lcd_units(3, myVel.surface);
-        lcd_units(4, myVel.vertical);
-        // Horizontal speed = sqrt(surface^2 - vertical^2)
-        float term = myVel.surface * myVel.surface - myVel.vertical * myVel.vertical;
-        lcd_units(11, (term > 0.0f) ? sqrtf(term) : 0.0f);
+        if (LCD_mode == LCD_PAGE_FLIGHT) {
+          lcd_units(LCD_F_SPD, myVel.surface);
+          lcd_units(LCD_F_VRT, myVel.vertical);
+          // Horizontal speed = sqrt(surface^2 - vertical^2)
+          float term = myVel.surface * myVel.surface - myVel.vertical * myVel.vertical;
+          lcd_units(LCD_F_HRZ, (term > 0.0f) ? sqrtf(term) : 0.0f);
+        } else if (LCD_mode == LCD_PAGE_ORBIT) {
+          lcd_units(LCD_F_VOB, myVel.orbital);
+        }
       }
       break;
 
     case AIRSPEED_MESSAGE:
-      if (LCD_mode == 1 && msgSize == sizeof(airspeedMessage)) {
+      if (LCD_mode == LCD_PAGE_FLIGHT && msgSize == sizeof(airspeedMessage)) {
         airspeedMessage air = parseMessage<airspeedMessage>(msg);
-        lcd_f(14, air.mach, 2);
-        lcd_f(15, air.gForces, 2);
+        lcd_f(LCD_F_MCH, air.mach, 2);
+        lcd_f(LCD_F_G, air.gForces, 2);
       }
       break;
 
     case ATMO_CONDITIONS_MESSAGE:
-      if (LCD_mode == 1 && msgSize == sizeof(atmoConditionsMessage)) {
+      if (LCD_mode == LCD_PAGE_FLIGHT && msgSize == sizeof(atmoConditionsMessage)) {
         atmoConditionsMessage atmo = parseMessage<atmoConditionsMessage>(msg);
         // 5 decimals: the module computes dynamic pressure from this, and upper-atmosphere densities are < 0.01.
-        lcd_f(13, atmo.airDensity, 5);
+        lcd_f(LCD_F_RHO, atmo.airDensity, 5);
       }
       break;
 
     case ROTATION_DATA_MESSAGE:
-      if (LCD_mode == 1 && msgSize == sizeof(vesselPointingMessage)) {
+      if (LCD_mode == LCD_PAGE_FLIGHT && msgSize == sizeof(vesselPointingMessage)) {
         vesselPointingMessage vessel = parseMessage<vesselPointingMessage>(msg);
-        lcd_f(1, vessel.heading, 1);
-        lcd_f(2, vessel.pitch, 1);
-        lcd_f(17, vessel.roll, 1);
-        lcd_f(7, vessel.surfaceVelocityHeading, 2);
-        lcd_f(9, vessel.surfaceVelocityPitch, 2);
+        lcd_f(LCD_F_HDG, vessel.heading, 1);
+        lcd_f(LCD_F_PIT, vessel.pitch, 1);
+        lcd_f(LCD_F_RLL, vessel.roll, 1);
+        lcd_f(LCD_F_SVH, vessel.surfaceVelocityHeading, 2);
+        lcd_f(LCD_F_SVP, vessel.surfaceVelocityPitch, 2);
       }
       break;
 
     case THROTTLE_CMD_MESSAGE:
-      if (LCD_mode == 1 && msgSize == sizeof(throttleMessage)) {
+      if (LCD_mode == LCD_PAGE_FLIGHT && msgSize == sizeof(throttleMessage)) {
         throttleMessage t = parseMessage<throttleMessage>(msg);
         // 0..32767 maps to 0..100%
         int32_t raw = constrain((int32_t)t.throttle, 0L, 32767L);
-        lcd_units(16, (float)((raw * 100L) / 32767L));
+        lcd_units(LCD_F_THR, (float)((raw * 100L) / 32767L));
+      }
+      break;
+
+    case MANEUVER_MESSAGE:
+      if (LCD_mode == LCD_PAGE_MNVR && msgSize == sizeof(maneuverMessage)) {
+        maneuverMessage myMnv = parseMessage<maneuverMessage>(msg);
+        LCD_nodes_dV = myMnv.deltaVTotal;
+        lcd_units(LCD_F_ADV, myMnv.deltaVTotal);
+        lcd_units(LCD_F_MRG, LCD_ship_dV - LCD_nodes_dV);
+        if (myMnv.deltaVTotal > 0.0f) {
+          lcd_units(LCD_F_NDV, myMnv.deltaVNextManeuver);
+          lcd_time_until(LCD_F_TTN, myMnv.timeToNextManeuver);
+          float toStart = myMnv.timeToNextManeuver - myMnv.durationNextManeuver / 2.0f;
+          if (toStart < 0.0f && myMnv.timeToNextManeuver >= 0.0f) {
+            lcd_set(LCD_F_TTB, "NOW");
+          } else {
+            lcd_time_until(LCD_F_TTB, toStart);
+          }
+          lcd_time_until(LCD_F_BRN, myMnv.durationNextManeuver);
+          lcd_f(LCD_F_NHD, myMnv.headingNextManeuver, 1);
+          lcd_f(LCD_F_NPT, myMnv.pitchNextManeuver, 1);
+        } else {
+          // No maneuver node planned.
+          lcd_set(LCD_F_NDV, "---");
+          lcd_set(LCD_F_TTN, "---");
+          lcd_set(LCD_F_TTB, "---");
+          lcd_set(LCD_F_BRN, "---");
+          lcd_set(LCD_F_NHD, "---");
+          lcd_set(LCD_F_NPT, "---");
+        }
+      }
+      break;
+
+    case ORBIT_MESSAGE:
+      if (LCD_mode == LCD_PAGE_ORBIT && msgSize == sizeof(orbitInfoMessage)) {
+        orbitInfoMessage myOrb = parseMessage<orbitInfoMessage>(msg);
+        lcd_units(LCD_F_SMA, myOrb.semiMajorAxis);
+        lcd_f(LCD_F_ECC, myOrb.eccentricity, 4);
+        lcd_f(LCD_F_INC, myOrb.inclination, 2);
+        lcd_time_until(LCD_F_PRD, myOrb.period);
+        lcd_f(LCD_F_LAN, myOrb.longAscendingNode, 1);
+        lcd_f(LCD_F_AOP, myOrb.argPeriapsis, 1);
+        lcd_f(LCD_F_TA, myOrb.trueAnomaly, 1);
+      }
+      break;
+
+    case SOI_MESSAGE: {
+      uint8_t n = (msgSize < LCD_FIELD_MAX_CHARS) ? msgSize : LCD_FIELD_MAX_CHARS;
+      memcpy(LCD_soi, msg, n);
+      LCD_soi[n] = '\0';
+      if (LCD_mode == LCD_PAGE_ORBIT) {
+        lcd_set(LCD_F_SOI, LCD_soi);
+      }
+      break;
+    }
+
+    case LF_MESSAGE:
+    case OX_MESSAGE:
+    case SF_MESSAGE:
+    case ELECTRIC_MESSAGE:
+    case XENON_GAS_MESSAGE:
+    case MONO_MESSAGE:
+      if (LCD_mode == LCD_PAGE_FUEL && msgSize == sizeof(resourceMessage)) {
+        uint8_t idx;
+        switch (messageType) {
+          case LF_MESSAGE:       idx = LCD_F_LF; break;
+          case OX_MESSAGE:       idx = LCD_F_OX; break;
+          case SF_MESSAGE:       idx = LCD_F_SF; break;
+          case ELECTRIC_MESSAGE: idx = LCD_F_EC; break;
+          case XENON_GAS_MESSAGE: idx = LCD_F_XE; break;
+          default:               idx = LCD_F_MP; break;
+        }
+        lcd_resource(idx, msg);
       }
       break;
 // --- g1 ---

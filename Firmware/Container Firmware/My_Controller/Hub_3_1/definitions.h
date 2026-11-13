@@ -213,6 +213,66 @@ bool keyboardEmulation = false;
   #define LCD_FIELD_MAX_CHARS 8
   #define LCD_FIELD_SIZE (LCD_FIELD_MAX_CHARS + 1)
   char LCD_data[LCD_FIELD_COUNT][LCD_FIELD_SIZE] = {"0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0"};
+  char LCD_soi[LCD_FIELD_SIZE] = "";   // last SOI name; KSP only sends it on change
+  float LCD_ship_dV = 0;               // for the maneuver page dV margin
+  float LCD_nodes_dV = 0;
+
+  // Pages = Telemetry module buttons (LCD_mode).
+  #define LCD_PAGE_FLIGHT 1   // AL/VL
+  #define LCD_PAGE_MNVR   2
+  #define LCD_PAGE_ORBIT  3
+  #define LCD_PAGE_FUEL   4
+
+  // Field map, shared with Firmware/Module Firmware/Telemetry/Telemetry.ino (keep in sync).
+  // Field 0 tags which page the data is for ('1'..'4'), or "X" = not flying (module blanks).
+  #define LCD_F_TAG  0
+  // Fields 1-7 mean the same on every page that shows them.
+  #define LCD_F_APO  1
+  #define LCD_F_PER  2
+  #define LCD_F_TTA  3
+  #define LCD_F_TTP  4
+  #define LCD_F_DVT  5    // total ship dV
+  #define LCD_F_DVS  6    // stage dV
+  #define LCD_F_ALT  7    // altitude above sea level
+  // Flight page
+  #define LCD_F_HDG  8
+  #define LCD_F_PIT  9
+  #define LCD_F_RLL  10
+  #define LCD_F_SVH  11   // surface velocity heading
+  #define LCD_F_SVP  12   // surface velocity pitch
+  #define LCD_F_SPD  13   // surface speed
+  #define LCD_F_VRT  14
+  #define LCD_F_HRZ  15
+  #define LCD_F_RHO  16   // air density
+  #define LCD_F_MCH  17
+  #define LCD_F_G    18
+  #define LCD_F_THR  19
+  // Maneuver page
+  #define LCD_F_NDV  8    // next node dV
+  #define LCD_F_TTN  9    // time to node
+  #define LCD_F_TTB  10   // time to burn start (node - half burn)
+  #define LCD_F_BRN  11   // burn duration
+  #define LCD_F_ADV  12   // dV of all nodes
+  #define LCD_F_NHD  13   // node heading
+  #define LCD_F_NPT  14   // node pitch
+  #define LCD_F_MRG  15   // ship dV - all nodes dV
+  // Orbit page
+  #define LCD_F_SMA  8
+  #define LCD_F_ECC  9
+  #define LCD_F_INC  10
+  #define LCD_F_PRD  11
+  #define LCD_F_LAN  12
+  #define LCD_F_AOP  13
+  #define LCD_F_TA   14
+  #define LCD_F_VOB  15   // orbital speed
+  #define LCD_F_SOI  16   // body name
+  // Fuel page: percent full, "-" = none aboard
+  #define LCD_F_LF   8
+  #define LCD_F_OX   9
+  #define LCD_F_SF   10
+  #define LCD_F_EC   11
+  #define LCD_F_XE   12
+  #define LCD_F_MP   13
 
   int ControlSys_combinedBytes;
   int Camera_combinedBytes;

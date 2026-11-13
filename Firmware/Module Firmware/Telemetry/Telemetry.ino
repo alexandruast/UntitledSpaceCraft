@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <U8g2lib.h>
 #include <Wire.h>
+#include <math.h>
 
 #ifdef U8X8_HAVE_HW_SPI
   #include <SPI.h>
@@ -13,27 +14,80 @@
 
 #define OWN_ADDRESS 40
 
-#define BTN_T1 9
-#define BTN_T2 8
-#define BTN_T3 7
-#define BTN_T4 6
+// Buttons, in panel order. The pressed button is the page (mode) reported to the hub.
+#define BTN_FLIGHT 9   // AL/VL
+#define BTN_MNVR   8
+#define BTN_ORBIT  7
+#define BTN_FUEL   6
 
-#define FIELD_COUNT 20
-#define FIELD_LEN   9   // 8 chars + null
+#define PAGE_FLIGHT 1
+#define PAGE_MNVR   2
+#define PAGE_ORBIT  3
+#define PAGE_FUEL   4
+
+#define FIELD_COUNT       20
+#define FIELD_LEN         9    // 8 chars + null
+#define FIELDS_PER_PACKET 4
+#define PACKET_COUNT      (FIELD_COUNT / FIELDS_PER_PACKET)
 
 #define DRAW_PERIOD_MS 250  // 4 Hz fallback redraw
 
 // ======================================================
+// FIELD MAP (keep in sync with Hub_3_1/definitions.h LCD_F_*)
+// ======================================================
+// Field 0 tags which page the data is for ('1'..'4'), or "X" = not flying (screen blanks).
+#define F_TAG  0
+// Same meaning on every page that shows them
+#define F_APO  1
+#define F_PER  2
+#define F_TTA  3
+#define F_TTP  4
+#define F_DVT  5
+#define F_DVS  6
+#define F_ALT  7
+// Flight page
+#define F_HDG  8
+#define F_PIT  9
+#define F_RLL  10
+#define F_SVH  11
+#define F_SVP  12
+#define F_SPD  13
+#define F_VRT  14
+#define F_HRZ  15
+#define F_RHO  16
+#define F_MCH  17
+#define F_G    18
+#define F_THR  19
+// Maneuver page
+#define F_NDV  8
+#define F_TTN  9
+#define F_TTB  10
+#define F_BRN  11
+#define F_ADV  12
+#define F_NHD  13
+#define F_NPT  14
+#define F_MRG  15
+// Orbit page
+#define F_SMA  8
+#define F_ECC  9
+#define F_INC  10
+#define F_PRD  11
+#define F_LAN  12
+#define F_AOP  13
+#define F_TA   14
+#define F_VOB  15
+#define F_SOI  16
+// Fuel page (percent, "-" = none aboard)
+#define F_LF   8
+#define F_OX   9
+#define F_SF   10
+#define F_EC   11
+#define F_XE   12
+#define F_MP   13
+
+// ======================================================
 // DISPLAY
 // ======================================================
-// U8G2_ST7920_128X64_1_SW_SPI u8g2(
-//   U8G2_R2,
-//   /* clock=*/ 11,
-//   /* data=*/ 13,
-//   /* CS=*/   10,
-//   /* reset=*/ U8X8_PIN_NONE
-// );
-
 U8G2_ST7920_128X64_2_SW_SPI u8g2(
   U8G2_R2,
   /* clock=*/ 11,
@@ -48,19 +102,20 @@ U8G2_ST7920_128X64_2_SW_SPI u8g2(
 static char in_back [FIELD_COUNT][FIELD_LEN];
 static char in_front[FIELD_COUNT][FIELD_LEN];
 
-// Only parse floats you need (Screen 1 currently uses these)
-static float f[FIELD_COUNT];
-
 static volatile bool packetReady = false;
-static volatile uint8_t lastPacketType = 0;
 
 // ======================================================
 // STATE
 // ======================================================
-uint8_t mode = 1;
+uint8_t mode = PAGE_FLIGHT;
 static uint32_t lastDrawMs = 0;
 static uint32_t lastBtnMs  = 0;
-static bool dataUpdated    = false;   // draw immediately after fresh data
+static bool redraw         = false;   // draw immediately after fresh data or a page change
+
+// Flight page values computed here (from fields)
+static bool  aoaValid = false;
+static float aoa = 0.0f;
+static float q   = 0.0f;
 
 // ======================================================
 // UTILS
@@ -73,109 +128,165 @@ static inline bool pressed(uint8_t pin) {
 #endif
 }
 
-float wrap180(float x) {
-  x = fmodf(x + 180.0f, 360.0f);
-  if (x < 0) x += 360.0f;
-  return x - 180.0f;
+static bool blanked() {
+  return in_front[F_TAG][0] == 'X';
+}
+
+// The data belongs to the page on screen (the hub re-tags after every page change).
+static bool fresh() {
+  return in_front[F_TAG][0] == (char)('0' + mode) && in_front[F_TAG][1] == '\0';
+}
+
+// Field text, or "" while the data is still for another page.
+static const char* fld(uint8_t i) {
+  return fresh() ? in_front[i] : "";
+}
+
+// Angle between the nose and the surface velocity vector (total angle of attack incl. sideslip).
+// Uses the spherical angle, so it stays correct near vertical where heading is meaningless.
+static void computeFlight() {
+  const float hdg  = atof(in_front[F_HDG]) * DEG_TO_RAD;
+  const float pit  = atof(in_front[F_PIT]) * DEG_TO_RAD;
+  const float vHdg = atof(in_front[F_SVH]) * DEG_TO_RAD;
+  const float vPit = atof(in_front[F_SVP]) * DEG_TO_RAD;
+  const float v    = atof(in_front[F_SPD]);
+  const float rho  = atof(in_front[F_RHO]);
+
+  // Velocity direction is meaningless when (nearly) stationary.
+  aoaValid = (v >= 1.0f);
+  if (aoaValid) {
+    float c = sinf(pit) * sinf(vPit) + cosf(pit) * cosf(vPit) * cosf(hdg - vHdg);
+    c = constrain(c, -1.0f, 1.0f);
+    aoa = acosf(c) * RAD_TO_DEG;
+  }
+  q = (rho > 0.0f) ? 0.5f * rho * v * v / 1000.0f : 0.0f;   // kPa
 }
 
 // ======================================================
 // DRAW HELPERS
 // ======================================================
-void drawInfoLeft(const char* name, int y, const char* value) {
-  u8g2.drawStr(0, y, name);
-  int w = u8g2.getStrWidth(value);
-  u8g2.drawStr(60 - w, y, value);
+// Labels are F("...") strings: they stay in flash to save RAM.
+
+static void drawLabel(int x, int y, const __FlashStringHelper* name) {
+  char buf[6];
+  strncpy_P(buf, (PGM_P)name, sizeof(buf) - 1);
+  buf[sizeof(buf) - 1] = '\0';
+  u8g2.drawStr(x, y, buf);
 }
 
-void drawInfoRight(const char* name, int y, const char* value) {
-  u8g2.drawStr(68, y, name);
-  int w = u8g2.getStrWidth(value);
-  u8g2.drawStr(127 - w, y, value);
+static void drawRight(int xRight, int y, const char* value) {
+  u8g2.drawStr(xRight - u8g2.getStrWidth(value), y, value);
+}
+
+// Two columns of 8 rows: label left-aligned, value right-aligned.
+static int rowY(uint8_t row) {
+  return 7 + 8 * row;
+}
+
+static void drawInfoLeft(uint8_t row, const __FlashStringHelper* name, const char* value) {
+  drawLabel(0, rowY(row), name);
+  drawRight(60, rowY(row), value);
+}
+
+static void drawInfoRight(uint8_t row, const __FlashStringHelper* name, const char* value) {
+  drawLabel(68, rowY(row), name);
+  drawRight(127, rowY(row), value);
+}
+
+static void drawColumns() {
+  u8g2.drawVLine(64, 0, 64);
 }
 
 // ======================================================
-// TELEMETRY SCREEN 1
+// PAGE: FLIGHT (AL/VL)
 // ======================================================
-void displayTelemetry1() {
-  const float rho   = f[13];
-  const float v     = f[3];
-  const float pit   = f[2];
-  const float hdg   = f[1];
-  const float vPit  = f[9];
-  const float vHdg  = f[7];
-
-  float q = 0.0f;
-  if (rho > 0.0f) {
-    q = 0.5f * rho * v * v / 1000.0f;
+void displayFlight() {
+  char aoaBuf[9] = "";
+  char qBuf[9]   = "";
+  if (fresh()) {
+    if (aoaValid) {
+      dtostrf(aoa, 4, 1, aoaBuf);
+    } else {
+      strcpy(aoaBuf, "---");
+    }
+    dtostrf(q, 4, 1, qBuf);
   }
 
-  const float dP = pit - vPit;
-  const float dH = wrap180(hdg - vHdg);
-  const float aoa = sqrtf(dP * dP + dH * dH);
-
-  u8g2.drawVLine(64, 0, 64);
-
-  // Row 1
-  drawInfoLeft ("APO", 7,  in_front[6]);
-  drawInfoRight("ALT", 7,  in_front[10]);
-
-  // Row 2
-  drawInfoLeft ("PER", 15, in_front[18]);
-  drawInfoRight("VRT", 15, in_front[4]);
-
-  // Row 3
-  drawInfoLeft ("TTA", 23, in_front[12]);
-  drawInfoRight("HRZ", 23, in_front[11]);
-
-  // Row 4
-  char buf[9];
-  dtostrf(aoa, 4, 1, buf);
-  drawInfoLeft ("AOA", 31, buf);
-  drawInfoRight("G",   31, in_front[15]);
-
-  // Row 5
-  drawInfoLeft ("PIT", 39, in_front[2]);
-  drawInfoRight("dVS", 39, in_front[8]);
-
-  // Row 6
-  drawInfoLeft ("RLL", 47, in_front[17]);
-  drawInfoRight("dVT", 47, in_front[5]);
-
-  // Row 7
-  drawInfoLeft ("HDG", 55, in_front[1]);
-  drawInfoRight("MCH", 55, in_front[14]);
-
-  // Row 8
-  dtostrf(q, 4, 1, buf);
-  drawInfoLeft ("THR", 63, in_front[16]);
-  drawInfoRight("Q",   63, buf);
+  drawColumns();
+  drawInfoLeft (0, F("APO"), fld(F_APO));  drawInfoRight(0, F("ALT"), fld(F_ALT));
+  drawInfoLeft (1, F("PER"), fld(F_PER));  drawInfoRight(1, F("VRT"), fld(F_VRT));
+  drawInfoLeft (2, F("TTA"), fld(F_TTA));  drawInfoRight(2, F("HRZ"), fld(F_HRZ));
+  drawInfoLeft (3, F("AOA"), aoaBuf);      drawInfoRight(3, F("G"),   fld(F_G));
+  drawInfoLeft (4, F("PIT"), fld(F_PIT));  drawInfoRight(4, F("dVS"), fld(F_DVS));
+  drawInfoLeft (5, F("RLL"), fld(F_RLL));  drawInfoRight(5, F("dVT"), fld(F_DVT));
+  drawInfoLeft (6, F("HDG"), fld(F_HDG));  drawInfoRight(6, F("MCH"), fld(F_MCH));
+  drawInfoLeft (7, F("THR"), fld(F_THR));  drawInfoRight(7, F("Q"),   qBuf);
 }
 
 // ======================================================
-// OTHER SCREENS
+// PAGE: MANEUVER
 // ======================================================
-void displayTelemetry2() {
-  u8g2.drawStr(0, 12, "SCREEN 2");
-  u8g2.drawStr(0, 28, "Orbit / Planning");
+void displayManeuver() {
+  drawColumns();
+  drawInfoLeft (0, F("NDV"), fld(F_NDV));  drawInfoRight(0, F("APO"), fld(F_APO));
+  drawInfoLeft (1, F("TTN"), fld(F_TTN));  drawInfoRight(1, F("PER"), fld(F_PER));
+  drawInfoLeft (2, F("TTB"), fld(F_TTB));  drawInfoRight(2, F("TTA"), fld(F_TTA));
+  drawInfoLeft (3, F("BRN"), fld(F_BRN));  drawInfoRight(3, F("TTP"), fld(F_TTP));
+  drawInfoLeft (4, F("ADV"), fld(F_ADV));  drawInfoRight(4, F("dVS"), fld(F_DVS));
+  drawInfoLeft (5, F("NHD"), fld(F_NHD));  drawInfoRight(5, F("dVT"), fld(F_DVT));
+  drawInfoLeft (6, F("NPT"), fld(F_NPT));  drawInfoRight(6, F("MRG"), fld(F_MRG));
 }
 
-void displayTelemetry3() {
-  u8g2.drawStr(0, 12, "SCREEN 3");
-  u8g2.drawStr(0, 28, "Cruise / Transfer");
+// ======================================================
+// PAGE: ORBIT
+// ======================================================
+void displayOrbit() {
+  drawColumns();
+  drawInfoLeft (0, F("SOI"), fld(F_SOI));  drawInfoRight(0, F("APO"), fld(F_APO));
+  drawInfoLeft (1, F("SMA"), fld(F_SMA));  drawInfoRight(1, F("PER"), fld(F_PER));
+  drawInfoLeft (2, F("ECC"), fld(F_ECC));  drawInfoRight(2, F("TTA"), fld(F_TTA));
+  drawInfoLeft (3, F("INC"), fld(F_INC));  drawInfoRight(3, F("TTP"), fld(F_TTP));
+  drawInfoLeft (4, F("PRD"), fld(F_PRD));  drawInfoRight(4, F("ALT"), fld(F_ALT));
+  drawInfoLeft (5, F("LAN"), fld(F_LAN));  drawInfoRight(5, F("VOB"), fld(F_VOB));
+  drawInfoLeft (6, F("AOP"), fld(F_AOP));
+  drawInfoLeft (7, F("TA"),  fld(F_TA));
 }
 
-void displayTelemetry4() {
-  u8g2.drawStr(0, 12, "SCREEN 4");
-  u8g2.drawStr(0, 28, "Landing / Dock");
+// ======================================================
+// PAGE: FUEL
+// ======================================================
+// Six vertical gauges, 52 px tall; no bar when the field is "-" (none aboard) or not yet received.
+static void drawFuelGauge(uint8_t col, const __FlashStringHelper* name, const char* value) {
+  const int x = 16 + 21 * col;            // tick column; bar sits 10 px left of it
+  if (value[0] != '\0' && value[0] != '-') {
+    int pct = constrain(atoi(value), 0, 100);
+    int h = (pct * 52 + 50) / 100;
+    u8g2.drawBox(x - 10, 52 - h, 10, h);
+  }
+  drawLabel(x - 10, 64, name);
+  u8g2.drawHLine(x, 0, 2);
+  u8g2.drawHLine(x, 12, 2);
+  u8g2.drawHLine(x, 25, 2);
+  u8g2.drawHLine(x, 37, 2);
+  u8g2.drawHLine(x, 51, 2);
+  if (col < 5) {
+    u8g2.drawVLine(x + 5, 0, 64);
+  }
+}
+
+void displayFuel() {
+  u8g2.drawHLine(2, 54, 124);
+  drawFuelGauge(0, F("LF"), fld(F_LF));
+  drawFuelGauge(1, F("OX"), fld(F_OX));
+  drawFuelGauge(2, F("SF"), fld(F_SF));
+  drawFuelGauge(3, F("EC"), fld(F_EC));
+  drawFuelGauge(4, F("XE"), fld(F_XE));
+  drawFuelGauge(5, F("MP"), fld(F_MP));
 }
 
 // ======================================================
 // I2C
 // ======================================================
-#define FIELDS_PER_PACKET 4
-#define PACKET_COUNT (FIELD_COUNT / FIELDS_PER_PACKET)
-
 void readField(uint8_t index) {
   if (!Wire.available()) {
     in_back[index][0] = '\0';
@@ -199,7 +310,6 @@ void onI2CReceive(int) {
     while (Wire.available()) Wire.read();
     return;
   }
-  lastPacketType = type;
 
   uint8_t base = (uint8_t)(type * FIELDS_PER_PACKET);
   for (uint8_t i = 0; i < FIELDS_PER_PACKET; i++) {
@@ -221,15 +331,15 @@ void onI2CRequest() {
 // ======================================================
 void setup() {
 #if BUTTON_ACTIVE_LOW
-  pinMode(BTN_T1, INPUT_PULLUP);
-  pinMode(BTN_T2, INPUT_PULLUP);
-  pinMode(BTN_T3, INPUT_PULLUP);
-  pinMode(BTN_T4, INPUT_PULLUP);
+  pinMode(BTN_FLIGHT, INPUT_PULLUP);
+  pinMode(BTN_MNVR,   INPUT_PULLUP);
+  pinMode(BTN_ORBIT,  INPUT_PULLUP);
+  pinMode(BTN_FUEL,   INPUT_PULLUP);
 #else
-  pinMode(BTN_T1, INPUT);
-  pinMode(BTN_T2, INPUT);
-  pinMode(BTN_T3, INPUT);
-  pinMode(BTN_T4, INPUT);
+  pinMode(BTN_FLIGHT, INPUT);
+  pinMode(BTN_MNVR,   INPUT);
+  pinMode(BTN_ORBIT,  INPUT);
+  pinMode(BTN_FUEL,   INPUT);
 #endif
 
   u8g2.begin();
@@ -246,10 +356,16 @@ void setup() {
 void loop() {
   // ---------- Button handling ----------
   if (millis() - lastBtnMs > 50) {
-    if      (pressed(BTN_T1)) { mode = 1; lastBtnMs = millis(); }
-    else if (pressed(BTN_T2)) { mode = 2; lastBtnMs = millis(); }
-    else if (pressed(BTN_T3)) { mode = 3; lastBtnMs = millis(); }
-    else if (pressed(BTN_T4)) { mode = 4; lastBtnMs = millis(); }
+    uint8_t newMode = mode;
+    if      (pressed(BTN_FLIGHT)) newMode = PAGE_FLIGHT;
+    else if (pressed(BTN_MNVR))   newMode = PAGE_MNVR;
+    else if (pressed(BTN_ORBIT))  newMode = PAGE_ORBIT;
+    else if (pressed(BTN_FUEL))   newMode = PAGE_FUEL;
+    if (newMode != mode) {
+      mode = newMode;
+      lastBtnMs = millis();
+      redraw = true;
+    }
   }
 
   // ---------- Data swap ----------
@@ -259,34 +375,28 @@ void loop() {
     packetReady = false;
     interrupts();
 
-    // parse only what Screen 1 needs (fast)
-    f[1]  = atof(in_front[1]);   // heading
-    f[2]  = atof(in_front[2]);   // pitch
-    f[3]  = atof(in_front[3]);   // surface speed
-    f[7]  = atof(in_front[7]);   // surface velocity heading
-    f[9]  = atof(in_front[9]);   // surface velocity pitch
-    f[13] = atof(in_front[13]);  // air density
-
-    dataUpdated = true;
+    if (mode == PAGE_FLIGHT && fresh()) {
+      computeFlight();
+    }
+    redraw = true;
   }
 
   // ---------- Draw ----------
   const uint32_t now = millis();
-  if (!dataUpdated && (now - lastDrawMs < DRAW_PERIOD_MS)) return;
+  if (!redraw && (now - lastDrawMs < DRAW_PERIOD_MS)) return;
   lastDrawMs = now;
-  dataUpdated = false;
+  redraw = false;
 
   u8g2.firstPage();
   do {
+    if (blanked()) continue;   // not flying: empty screen
     u8g2.setFont(u8g2_font_6x10_tf);
     switch (mode) {
-      case 1: displayTelemetry1(); break;
-      case 2: displayTelemetry2(); break;
-      case 3: displayTelemetry3(); break;
-      case 4: displayTelemetry4(); break;
+      case PAGE_FLIGHT: displayFlight();   break;
+      case PAGE_MNVR:   displayManeuver(); break;
+      case PAGE_ORBIT:  displayOrbit();    break;
+      case PAGE_FUEL:   displayFuel();     break;
       default: break;
     }
   } while (u8g2.nextPage());
 }
-
-// Test

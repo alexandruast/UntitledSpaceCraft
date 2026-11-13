@@ -32,14 +32,13 @@ void deregisterAllTelemetryChannels() {
   mySimpit.deregisterChannel(ATMO_CONDITIONS_MESSAGE);
   mySimpit.deregisterChannel(ROTATION_DATA_MESSAGE);
   mySimpit.deregisterChannel(THROTTLE_CMD_MESSAGE);
+  mySimpit.deregisterChannel(SOI_MESSAGE);
 }
 
-// Register telemetry channels only for the requested LCD mode.
+// Register telemetry channels only for the page the Telemetry module shows.
 void registerTelemetryChannelsForMode(byte mode) {
-  // Matches the custom Telemetry module firmware: only screen 1 shows data,
-  // screens 2-4 are placeholders and need no telemetry.
   switch (mode) {
-    case 1: // Flight page
+    case LCD_PAGE_FLIGHT:
       mySimpit.registerChannel(APSIDES_MESSAGE);
       mySimpit.registerChannel(APSIDESTIME_MESSAGE);
       mySimpit.registerChannel(ALTITUDE_MESSAGE);
@@ -50,7 +49,30 @@ void registerTelemetryChannelsForMode(byte mode) {
       mySimpit.registerChannel(ROTATION_DATA_MESSAGE);
       mySimpit.registerChannel(THROTTLE_CMD_MESSAGE);
       break;
-    default: // Placeholder / unknown page
+    case LCD_PAGE_MNVR:
+      mySimpit.registerChannel(APSIDES_MESSAGE);
+      mySimpit.registerChannel(APSIDESTIME_MESSAGE);
+      mySimpit.registerChannel(DELTAV_MESSAGE);
+      mySimpit.registerChannel(MANEUVER_MESSAGE);
+      break;
+    case LCD_PAGE_ORBIT:
+      mySimpit.registerChannel(APSIDES_MESSAGE);
+      mySimpit.registerChannel(APSIDESTIME_MESSAGE);
+      mySimpit.registerChannel(ALTITUDE_MESSAGE);
+      mySimpit.registerChannel(VELOCITY_MESSAGE);
+      mySimpit.registerChannel(ORBIT_MESSAGE);
+      mySimpit.registerChannel(SOI_MESSAGE);
+      mySimpit.requestMessageOnChannel(SOI_MESSAGE);
+      break;
+    case LCD_PAGE_FUEL:
+      mySimpit.registerChannel(LF_MESSAGE);
+      mySimpit.registerChannel(OX_MESSAGE);
+      mySimpit.registerChannel(SF_MESSAGE);
+      mySimpit.registerChannel(ELECTRIC_MESSAGE);
+      mySimpit.registerChannel(XENON_GAS_MESSAGE);
+      mySimpit.registerChannel(MONO_MESSAGE);
+      break;
+    default: // Blank / unknown page
       break;
   }
 }
@@ -67,6 +89,25 @@ void updateTelemetrySubscriptions(byte mode, bool forceRefresh) {
 // Register telemetry channels to Simpit.
 void registerTelemetryChannels() {
   updateTelemetrySubscriptions(LCD_mode, true);
+}
+
+// Empty all fields and tag them for the current page, so the module never shows another page's values.
+void LCD_resetFields() {
+  for (uint8_t i = 0; i < LCD_FIELD_COUNT; i++) {
+    LCD_data[i][0] = '\0';
+  }
+  LCD_data[LCD_F_TAG][0] = (char)('0' + LCD_mode);
+  LCD_data[LCD_F_TAG][1] = '\0';
+  if (LCD_mode == LCD_PAGE_ORBIT) {
+    lcd_set(LCD_F_SOI, LCD_soi);
+  }
+}
+
+// Called before each transmission while flying: restores the page tag after a blank ("X") or page change.
+void LCD_syncTag() {
+  if (LCD_data[LCD_F_TAG][0] != (char)('0' + LCD_mode) || LCD_data[LCD_F_TAG][1] != '\0') {
+    LCD_resetFields();
+  }
 }
 
 // Send data to the LCD screen.
@@ -87,6 +128,7 @@ void LCD_transmission(int dspl_address, char LCD_data_register[][LCD_FIELD_SIZE]
     LCD_transmit = 0;
     if (LCD_mode_incoming != LCD_mode) {
       LCD_mode = LCD_mode_incoming;
+      LCD_resetFields();
       updateTelemetrySubscriptions(LCD_mode, false);
     }
   }
@@ -282,7 +324,7 @@ void transmissions() {
 // --- h1 ---
 if (Action_Ctrl_Con) {module_transmission(Action_Ctrl_, Action_Ctrl, TWO_BYTES, Action_Dspl_, Action_Dspl, TWO_BYTES);}
 // --- c1 ---
-if (LCD_Con) {LCD_transmission(LCD_, LCD_data);}
+if (LCD_Con) {LCD_syncTag(); LCD_transmission(LCD_, LCD_data);}
 // --- g1 ---
 if (Ctrl_Sys_Ctrl_Con) {module_transmission(Ctrl_Sys_Ctrl_, Ctrl_Sys_Ctrl, TWO_BYTES, Ctrl_Sys_Dspl_, Ctrl_Sys_Dspl, ONE_BYTE);}
 // --- b1 ---
