@@ -71,13 +71,13 @@ void registerTelemetryChannels() {
 
 // Send data to the LCD screen.
 // Packet n (0..LCD_PACKET_COUNT-1) carries fields n*4 .. n*4+3; after the last packet, read the screen mode back.
-void LCD_transmission(int dspl_address, String LCD_data_register[]) {
+void LCD_transmission(int dspl_address, char LCD_data_register[][LCD_FIELD_SIZE]) {
   if (LCD_transmit < LCD_PACKET_COUNT) {
     Wire.beginTransmission(dspl_address);
     Wire.write((uint8_t)LCD_transmit);
     uint8_t base = (uint8_t)(LCD_transmit * LCD_FIELDS_PER_PACKET);
     for (uint8_t i = 0; i < LCD_FIELDS_PER_PACKET; i++) {
-      sendPacket(LCD_data_register[base + i].c_str());
+      sendPacket(LCD_data_register[base + i]);
     }
     Wire.endTransmission();
     LCD_transmit++;
@@ -133,7 +133,7 @@ void allZero() {
   }
   if (LCD_Con) {
     for (int i = 0; i < LCD_FIELD_COUNT; i++) {
-      LCD_data[i] = "X";
+      strcpy(LCD_data[i], "X");
     }
     // One call per data packet, plus one for the mode read-back.
     for (int i = 0; i <= LCD_PACKET_COUNT; i++) {

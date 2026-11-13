@@ -144,7 +144,8 @@ void loop() {
         EVA_Button_LAST = true;
       }
       if (!On_EVA and EVA_Button_LAST) {
-        for (int i = 0; i < 11; i++) {
+        // Array size differs: 11 in the default (actionResults.h), 10 in the Translation module.
+        for (unsigned int i = 0; i < sizeof(EVA_List_Analog) / sizeof(EVA_List_Analog[0]); i++) {
           Keyboard.release(EVA_List_Analog[i]);
         }
         EVA_Button_LAST = false;

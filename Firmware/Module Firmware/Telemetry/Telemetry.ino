@@ -173,27 +173,41 @@ void displayTelemetry4() {
 // ======================================================
 // I2C
 // ======================================================
+#define FIELDS_PER_PACKET 4
+#define PACKET_COUNT (FIELD_COUNT / FIELDS_PER_PACKET)
+
 void readField(uint8_t index) {
+  if (!Wire.available()) {
+    in_back[index][0] = '\0';
+    return;
+  }
   uint8_t len = Wire.read();
-  if (len > FIELD_LEN - 1) len = FIELD_LEN - 1;
 
   uint8_t i = 0;
   while (Wire.available() && i < len) {
-    in_back[index][i++] = (char)Wire.read();
+    char c = (char)Wire.read();
+    // Keep what fits; still consume the rest so the next field starts at its length byte.
+    if (i < FIELD_LEN - 1) in_back[index][i] = c;
+    i++;
   }
-  in_back[index][i] = '\0';
+  in_back[index][(i < FIELD_LEN - 1) ? i : FIELD_LEN - 1] = '\0';
 }
 
 void onI2CReceive(int) {
   uint8_t type = Wire.read();
+  if (type >= PACKET_COUNT) {
+    while (Wire.available()) Wire.read();
+    return;
+  }
   lastPacketType = type;
 
-  uint8_t base = (uint8_t)(type * 4);
-  for (uint8_t i = 0; i < 4; i++) {
+  uint8_t base = (uint8_t)(type * FIELDS_PER_PACKET);
+  for (uint8_t i = 0; i < FIELDS_PER_PACKET; i++) {
     readField((uint8_t)(base + i));
   }
 
-  if (type == 3) {
+  // Swap buffers once the last packet of the cycle is in.
+  if (type == PACKET_COUNT - 1) {
     packetReady = true;
   }
 }

@@ -206,10 +206,13 @@ bool keyboardEmulation = false;
   byte LCD_mode = 0;
   byte LCD_mode_registered = 255;
   // Telemetry module protocol: 20 fields, sent as 5 packets of 4 fields each.
+  // Fields are fixed char buffers (no String / heap). The Telemetry module shows at most 8 chars per field.
   #define LCD_FIELD_COUNT 20
   #define LCD_FIELDS_PER_PACKET 4
   #define LCD_PACKET_COUNT (LCD_FIELD_COUNT / LCD_FIELDS_PER_PACKET)
-  String LCD_data[LCD_FIELD_COUNT] = {"0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0"};
+  #define LCD_FIELD_MAX_CHARS 8
+  #define LCD_FIELD_SIZE (LCD_FIELD_MAX_CHARS + 1)
+  char LCD_data[LCD_FIELD_COUNT][LCD_FIELD_SIZE] = {"0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0"};
 
   int ControlSys_combinedBytes;
   int Camera_combinedBytes;
